@@ -192,8 +192,16 @@ export const napcatChannelPlugin: ChannelPlugin<NapCatAccount> = {
           fileData = `file://${fileData}`;
       }
 
+      const isImage = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(mediaUrl);
+      const fileName = path.basename(mediaUrl);
       const message = [
-        { type: 'image', data: { file: fileData } }
+        { 
+            type: isImage ? 'image' : 'file', 
+            data: { 
+                file: fileData,
+                name: isImage ? undefined : fileName
+            } 
+        }
       ];
       if (text) {
         message.unshift({ type: 'text', data: { text: text + ' ' } } as any);
@@ -256,7 +264,7 @@ export const napcatChannelPlugin: ChannelPlugin<NapCatAccount> = {
           // Check Admin Permission
           if (account.adminUins && account.adminUins.length > 0) {
             if (!account.adminUins.includes(message.user_id)) {
-               console.log(`[NapCat] Ignored message from non-admin user: ${message.user_id}`);
+              //  console.log(`[NapCat] Ignored message from non-admin user: ${message.user_id}`);
                return;
             }
           }
@@ -287,10 +295,51 @@ export const napcatChannelPlugin: ChannelPlugin<NapCatAccount> = {
                 .map(seg => seg.data.text)
                 .join('');
                 
-             // Extract first image URL if available
-             const imageSeg = message.message.find(seg => seg.type === 'image');
-             if (imageSeg && imageSeg.data) {
-                 mediaUrl = imageSeg.data.url || imageSeg.data.file;
+             // Extract first image or file URL if available
+             const mediaSeg = message.message.find(seg => seg.type === 'image' || seg.type === 'file');
+             if (mediaSeg && mediaSeg.data) {
+                 mediaUrl = mediaSeg.data.url;
+
+                 // If we don't have a web URL, but we have a file ID, try to get a downloadable URL
+                 const fileId = mediaSeg.data.file_id || mediaSeg.data.file;
+                 
+                 if ((!mediaUrl || !mediaUrl.startsWith('http')) && fileId) {
+                     try {
+                        console.log(`[NapCat] Resolving file ID: ${fileId}...`);
+                        
+                        let resolvedUrl: string | undefined;
+
+                        // Try NapCat specific extensions directly as requested
+                        if (message.message_type === 'group' && message.group_id) {
+                            console.log(`[NapCat] Trying get_group_file_url for group ${message.group_id}...`);
+                            const groupUrl = await client.getGroupFileUrl(message.group_id, fileId);
+                            if (groupUrl && groupUrl.url) resolvedUrl = groupUrl.url;
+                        } else if (message.message_type === 'private') {
+                            console.log(`[NapCat] Trying get_private_file_url...`);
+                            const privateUrl = await client.getPrivateFileUrl(fileId);
+                            if (privateUrl && privateUrl.url) resolvedUrl = privateUrl.url;
+                        }
+
+                        if (resolvedUrl) {
+                            mediaUrl = resolvedUrl;
+                            console.log(`[NapCat] Resolved URL: ${mediaUrl}`);
+                        }
+                     } catch (err) {
+                        console.warn(`[NapCat] Failed to resolve file URL for ID ${fileId}:`, err);
+                     }
+                 }
+
+                 // Fallback to path if we still don't have a URL
+                 if (!mediaUrl && mediaSeg.data.path) {
+                     mediaUrl = mediaSeg.data.path;
+                 }
+                 
+                 // Last resort: use the file ID itself (might be a filename or UUID)
+                 if (!mediaUrl && mediaSeg.data.file) {
+                     mediaUrl = mediaSeg.data.file;
+                 }
+                 
+                 console.log(`[NapCat] Final MediaUrl: ${mediaUrl}`);
              }
           }
           messageText = messageText.trim();
@@ -437,7 +486,15 @@ export const napcatChannelPlugin: ChannelPlugin<NapCatAccount> = {
                           fileData = `file://${fileData}`;
                       }
                       
-                      messageBody.push({ type: 'image', data: { file: fileData } });
+                      const isImage = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(mediaItem);
+                      const fileName = path.basename(mediaItem);
+                      messageBody.push({ 
+                          type: isImage ? 'image' : 'file', 
+                          data: { 
+                              file: fileData,
+                              name: isImage ? undefined : fileName
+                          } 
+                      });
                     }
                   }
 

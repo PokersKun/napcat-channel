@@ -165,4 +165,18 @@ export class NapCatApiClient {
   async getLoginInfo(): Promise<{ user_id: number; nickname: string }> {
       return this.request('/get_login_info', {});
   }
+
+  /**
+   * Get group file URL (NapCat extension)
+   */
+  async getGroupFileUrl(groupId: number, fileId: string): Promise<{ url: string }> {
+      return this.request('/get_group_file_url', { group_id: groupId, file_id: fileId });
+  }
+
+  /**
+   * Get private file URL (NapCat extension)
+   */
+  async getPrivateFileUrl(fileId: string): Promise<{ url: string }> {
+      return this.request('/get_private_file_url', { file_id: fileId });
+  }
 }

@@ -7,20 +7,23 @@ NapCat 频道插件，为 [Clawdbot](https://github.com/moltbot/moltbot) 提供 
 ## 功能特性
 
 - **WebSocket/HTTP 双向支持**：
-  - HTTP 模式：用于高性能消息发送（可选，推荐配置）。
-  - WebSocket 模式：用于实时消息接收和事件监听，并在 HTTP 未配置时自动降级用于发送消息。
-- **灵活部署**：支持正向 WebSocket 连接。
-- **消息类型**：支持群聊消息和私聊消息。
+  - HTTP 模式：用于高性能消息发送和**文件下载**（强烈推荐，尤其是分离部署时）。
+  - WebSocket 模式：用于实时消息接收和事件监听。
+- **消息类型支持**：
+  - **文本消息**：群聊和私聊文本收发。
+  - **图片消息**：支持双向图片传输。
+  - **文件消息**：支持**文件接收**（支持文档、压缩包等）和发送。
+    - 接收时：自动通过 NapCat 专用接口 (`/get_group_file_url` 或 `/get_private_file_url`) 获取下载直链，支持跨容器/远程下载。
+    - 发送时：根据文件类型自动选择 `image` 或 `file` 类型发送。
 - **管理员控制**：支持通过 `adminUins` 配置白名单，仅允许特定用户触发机器人。
-- **多媒体支持**：支持发送图片消息。
-- **集成 Clawdbot**：无缝对接 Clawdbot AI 回复系统。
+- **灵活部署**：完美支持 Docker 等容器化分离部署场景。
 
 ## 前置要求
 
 1. 已安装并运行 [Clawdbot](https://github.com/moltbot/moltbot)。
-2. 已部署 NapCat 或其他 OneBot 11 兼容端（如 Go-CQHTTP）。
-   - NapCat 需要开启 WebSocket 服务。
-   - 推荐同时开启 HTTP 服务以获得更好的发送性能。
+2. 已部署 NapCat 或其他 OneBot 11 兼容端。
+   - **必须开启 WebSocket 服务**（用于接收消息）。
+   - **必须开启 HTTP 服务**（用于获取文件下载链接，否则无法接收文件）。
 
 ## 安装
 
@@ -35,7 +38,7 @@ npm install
 npm run build
 ```
 
-如果作为本地插件安装到 Clawdbot：
+作为本地插件安装到 Clawdbot：
 
 ```bash
 clawdbot plugins install -l /home/pokers/clawd/plugins-workspaces/napcat-channel
@@ -46,24 +49,9 @@ clawdbot plugins enable napcat-channel
 
 在 Clawdbot 配置文件 (`~/.clawdbot/clawdbot.json`) 中添加配置。
 
-### 最小配置 (仅 WebSocket)
+### 标准配置 (WS + HTTP)
 
-适用于只有 WebSocket 端口的情况：
-
-```json
-{
-  "channels": {
-    "napcat-channel": {
-      "wsUrl": "ws://127.0.0.1:3001",
-      "token": "your-access-token"
-    }
-  }
-}
-```
-
-### 推荐配置 (WS + HTTP)
-
-适用于同时开启了 HTTP 和 WS 的标准部署，性能更佳：
+为了获得完整的文件收发能力，请务必同时配置 `wsUrl` 和 `httpUrl`：
 
 ```json
 {
@@ -71,37 +59,19 @@ clawdbot plugins enable napcat-channel
     "napcat-channel": {
       "wsUrl": "ws://127.0.0.1:3001",
       "httpUrl": "http://127.0.0.1:3000",
-      "token": "your-access-token"
-    }
-  }
-}
-```
-
-### 私有化配置 (管理员白名单)
-
-仅允许特定 QQ 号触发机器人：
-
-```json
-{
-  "channels": {
-    "napcat-channel": {
-      "wsUrl": "ws://127.0.0.1:3001",
-      "httpUrl": "http://127.0.0.1:3000",
+      "token": "your-access-token",
       "adminUins": [
-        123456789,
-        987654321
+        123456789
       ]
     }
   }
 }
 ```
 
-或使用命令行配置：
-
-```bash
-clawdbot config set channels.napcat-channel.wsUrl "ws://127.0.0.1:3001"
-clawdbot config set channels.napcat-channel.httpUrl "http://127.0.0.1:3000"
-```
+- **wsUrl**: NapCat 的正向 WebSocket 地址。
+- **httpUrl**: NapCat 的 HTTP API 地址（用于获取文件直链）。
+- **token**: 访问令牌（可选，若 NapCat 配置了则必填）。
+- **adminUins**: 管理员 QQ 号列表（可选，配置后仅响应白名单用户）。
 
 ## 使用
 
@@ -111,13 +81,10 @@ clawdbot config set channels.napcat-channel.httpUrl "http://127.0.0.1:3000"
 clawdbot gateway restart
 ```
 
-查看状态：
+### 文件传输说明
 
-```bash
-clawdbot channels status
-```
-
-在 QQ 群中 @机器人 或私聊机器人即可触发 AI 回复。
+- **发送文件**：直接回复文件路径（或使用 Clawdbot 的 `MEDIA:` 语法），插件会自动判断文件类型并发送。
+- **接收文件**：当收到群文件或私聊文件时，插件会自动调用 NapCat 的专用接口获取下载链接。只要 `httpUrl` 配置正确且 NapCat HTTP 服务可访问，即可在 Clawdbot 中直接读取和解析文件内容。
 
 ## 项目结构
 
@@ -128,49 +95,21 @@ napcat-channel/
 ├── clawdbot.plugin.json    # Clawdbot 插件声明
 ├── index.ts                # 插件入口
 └── src/
-    ├── channel.ts          # ChannelPlugin 实现与配置解析
+    ├── channel.ts          # 核心逻辑：消息收发、文件 URL 解析
     ├── runtime.ts          # WebSocket 运行时与事件分发
     ├── types.ts            # OneBot 11 类型定义
     ├── sdk-types.ts        # Clawdbot SDK 类型声明
     └── api/
-        └── client.ts       # API 客户端 (支持 HTTP 与 WS 降级)
+        └── client.ts       # API 客户端 (HTTP 请求封装)
 ```
 
-## API 说明
+## 常见问题
 
-### OneBot 11 事件支持
+**Q: 为什么我收到的文件无法解析？**
+A: 请检查是否配置了 `httpUrl`。在 Docker 等分离部署环境中，NapCat 返回的默认文件路径通常是容器内路径，外部无法访问。必须通过 HTTP 接口 (`/get_group_file_url` 等) 获取可供下载的直链。
 
-| 事件类型 | post_type | 说明 |
-|----------|-----------|------|
-| 群消息 | `message` (group) | 监听群聊消息，支持 @ 触发 |
-| 私聊消息 | `message` (private) | 监听私聊消息 |
-| 生命周期 | `meta_event` (lifecycle) | 监听连接状态 |
-
-### 内部路由
-
-Clawdbot 内部使用以下格式标识会话：
-
-- **群聊**: `napcat-channel:group:{group_id}`
-- **私聊**: `napcat-channel:private:{user_id}`
-
-## 开发与调试
-
-```bash
-# 开启 TypeScript 监听构建
-npm run watch
-```
-
-调试时建议查看控制台日志：
-
-- `[NapCat] WebSocket connected` - 连接成功
-- `[NapCat] Received ...` - 收到消息日志
-- `[NapCat] Sending reply ...` - 发送回复日志
-
-## 注意事项
-
-1. **Token 鉴权**：如果 NapCat 配置了 `access_token`，必须在插件配置中填写 `token` 字段，否则连接会被拒绝。
-2. **消息过滤**：默认情况下，机器人会响应所有接收到的私聊和群聊 @ 消息。建议在生产环境配置 `adminUins` 以限制使用权限。
-3. **WS 降级**：当未配置 `httpUrl` 时，发送消息会通过 WebSocket 的 API 调用（带 `echo` 字段）实现。
+**Q: 发送文件时文件名是乱码/UUID？**
+A: 插件已优化发送逻辑，在发送非图片文件时会自动带上原始文件名。但最终显示效果仍取决于接收端（QQ）的处理。
 
 ## 许可证
 
