@@ -7,6 +7,8 @@ import type { ChannelPlugin } from './sdk-types.js';
 import { NapCatApiClient } from './api/client.js';
 import { NapCatRuntime, getNapCatRuntime } from './runtime.js';
 import type { NapCatAccount, OB11MessageEvent } from './types.js';
+import * as fs from 'fs';
+import * as path from 'path';
 
 // Store for active runtimes and API clients
 const activeRuntimes: Map<string, NapCatRuntime> = new Map();
@@ -57,6 +59,11 @@ function getOrCreateApiClient(accountId: string, config: NapCatAccount): NapCatA
 
 // Helper to parse target ID (e.g., "group:123" -> { type: 'group', id: 123 })
 function parseTarget(target: string): { type: 'group' | 'private'; id: number } {
+  // Strip plugin prefix if present
+  if (target.startsWith('napcat-channel:')) {
+    target = target.replace(/^napcat-channel:/, '');
+  }
+
   if (target.startsWith('group:')) {
     return { type: 'group', id: parseInt(target.replace('group:', ''), 10) };
   }
@@ -133,6 +140,7 @@ export const napcatChannelPlugin: ChannelPlugin<NapCatAccount> = {
     textChunkLimit: 4000,
 
     sendText: async ({ to, text, accountId, replyToId }) => {
+      console.log(`[NapCat] outbound.sendText called to=${to} text=${text.slice(0, 20)}...`);
       const runtime = getNapCatRuntime();
       const cfg = runtime.config.loadConfig();
       const account = resolveNapCatAccount(cfg, accountId);
@@ -154,6 +162,7 @@ export const napcatChannelPlugin: ChannelPlugin<NapCatAccount> = {
     },
 
     sendMedia: async ({ to, text, mediaUrl, accountId, replyToId }) => {
+      console.log(`[NapCat] outbound.sendMedia called to=${to} mediaUrl=${mediaUrl}`);
       const runtime = getNapCatRuntime();
       const cfg = runtime.config.loadConfig();
       const account = resolveNapCatAccount(cfg, accountId);
@@ -162,8 +171,29 @@ export const napcatChannelPlugin: ChannelPlugin<NapCatAccount> = {
       const client = getOrCreateApiClient(accountId, account);
       const { type, id } = parseTarget(to);
 
+      let fileData = mediaUrl;
+      
+      // If it looks like a local absolute path, check if we need to base64 encode it
+      // This is necessary if NapCat is running on a different machine/container
+      if (fileData.startsWith('/') && fs.existsSync(fileData)) {
+          try {
+              const fileBuffer = fs.readFileSync(fileData);
+              const base64 = fileBuffer.toString('base64');
+              fileData = `base64://${base64}`;
+              console.log(`[NapCat] Converted local file ${mediaUrl} to base64 (${base64.length} chars)`);
+          } catch (err) {
+              console.error(`[NapCat] Failed to read local file ${mediaUrl}:`, err);
+              // Fallback to file:// protocol if read fails, though it likely won't work remotely
+              if (!fileData.startsWith('file://')) {
+                  fileData = `file://${fileData}`;
+              }
+          }
+      } else if (fileData.startsWith('/') && !fileData.startsWith('file://')) {
+          fileData = `file://${fileData}`;
+      }
+
       const message = [
-        { type: 'image', data: { file: mediaUrl } }
+        { type: 'image', data: { file: fileData } }
       ];
       if (text) {
         message.unshift({ type: 'text', data: { text: text + ' ' } } as any);
@@ -236,6 +266,8 @@ export const napcatChannelPlugin: ChannelPlugin<NapCatAccount> = {
 
           // Extract text
           let messageText = '';
+          let mediaUrl: string | undefined;
+
           if (typeof message.message === 'string') {
             messageText = message.message;
           } else if (Array.isArray(message.message)) {
@@ -243,8 +275,24 @@ export const napcatChannelPlugin: ChannelPlugin<NapCatAccount> = {
                 .filter(seg => seg.type === 'text')
                 .map(seg => seg.data.text)
                 .join('');
+                
+             // Extract first image URL if available
+             const imageSeg = message.message.find(seg => seg.type === 'image');
+             if (imageSeg && imageSeg.data) {
+                 mediaUrl = imageSeg.data.url || imageSeg.data.file;
+             }
           }
           messageText = messageText.trim();
+
+          // If no text but we have media, create a placeholder text to ensure processing
+          if (!messageText && mediaUrl) {
+              messageText = '[Image]';
+          }
+          
+          // Append Media URL to text so the agent can see it
+          if (mediaUrl) {
+              messageText += `\n[MediaUrl: ${mediaUrl}]`;
+          }
 
           if (!messageText) return;
 
@@ -283,6 +331,7 @@ export const napcatChannelPlugin: ChannelPlugin<NapCatAccount> = {
             Body: body,
             RawBody: messageText,
             CommandBody: messageText,
+            MediaUrl: mediaUrl,
             From: `napcat-channel:${isDirect ? 'dm' : 'channel'}:${peerId}`, 
             To: `napcat-channel:${channelId}`, 
             SessionKey: route.sessionKey,
@@ -313,8 +362,23 @@ export const napcatChannelPlugin: ChannelPlugin<NapCatAccount> = {
                 responsePrefix,
                 humanDelay,
                 deliver: async (payload) => {
+                  // Inspect payload to find media
                   const replyText = payload.text;
-                  const replyMedia = payload.media || [];
+                  
+                  // Clawdbot might pass media in 'media', 'files', 'mediaUrls' (array), or 'mediaUrl' (string)
+                  let replyMedia: string[] = [];
+                  
+                  if (Array.isArray(payload.media)) {
+                    replyMedia = payload.media;
+                  } else if (Array.isArray(payload.files)) {
+                    replyMedia = payload.files;
+                  } else if (Array.isArray(payload.mediaUrls)) {
+                    replyMedia = payload.mediaUrls;
+                  } else if (typeof payload.mediaUrl === 'string' && payload.mediaUrl) {
+                    replyMedia = [payload.mediaUrl];
+                  }
+
+                  console.log(`[NapCat] Deliver payload keys: ${Object.keys(payload).join(', ')}`);
 
                   if (!replyText && replyMedia.length === 0) return;
 
@@ -343,7 +407,26 @@ export const napcatChannelPlugin: ChannelPlugin<NapCatAccount> = {
 
                     // Add image segments
                     for (const mediaItem of replyMedia) {
-                      messageBody.push({ type: 'image', data: { file: mediaItem } });
+                      let fileData = mediaItem;
+                      
+                      // Handle local files for remote NapCat
+                      if (fileData.startsWith('/') && fs.existsSync(fileData)) {
+                          try {
+                              const fileBuffer = fs.readFileSync(fileData);
+                              const base64 = fileBuffer.toString('base64');
+                              fileData = `base64://${base64}`;
+                              console.log(`[NapCat] Converted local file ${mediaItem} to base64 (${base64.length} chars)`);
+                          } catch (err) {
+                              console.error(`[NapCat] Failed to read local file ${mediaItem}:`, err);
+                              if (!fileData.startsWith('file://')) {
+                                  fileData = `file://${fileData}`;
+                              }
+                          }
+                      } else if (fileData.startsWith('/') && !fileData.startsWith('file://')) {
+                          fileData = `file://${fileData}`;
+                      }
+                      
+                      messageBody.push({ type: 'image', data: { file: fileData } });
                     }
                   }
 

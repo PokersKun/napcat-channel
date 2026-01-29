@@ -8,6 +8,9 @@ export type MoltbotConfig = any;
 export interface ReplyPayload {
   text: string;
   media?: string[];
+  files?: string[];
+  mediaUrls?: string[];
+  mediaUrl?: string;
   metadata?: {
     model?: string;
   };
