@@ -261,6 +261,17 @@ export const napcatChannelPlugin: ChannelPlugin<NapCatAccount> = {
             }
           }
 
+          // Check Mention in Group
+          if (message.message_type === 'group') {
+            let isMentioned = false;
+            if (Array.isArray(message.message)) {
+              isMentioned = message.message.some(seg => seg.type === 'at' && String(seg.data.qq) === String(message.self_id));
+            } else if (typeof message.message === 'string') {
+              isMentioned = message.message.includes(`[CQ:at,qq=${message.self_id}]`);
+            }
+            if (!isMentioned) return;
+          }
+
           const core = getNapCatRuntime();
           const cfg = core.config.loadConfig();
 
