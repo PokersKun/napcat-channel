@@ -1,0 +1,9 @@
+{
+  "id": "napcat-channel",
+  "channels": ["napcat-channel"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
